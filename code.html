@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Approximation with Random Rectangles</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+        canvas {
+            border: 1px solid #000;
+        }
+        .controls {
+            margin-top: 20px;
+        }
+        label, input, button {
+            margin: 5px;
+        }
+        input[type="text"] {
+            width: 100px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <h1>Image Approximation with Random Rectangles</h1>
+    
+    <input type="file" id="imageUpload" accept="image/*">
+    
+    <div class="controls">
+        <label for="minSize">Min Rectangle Size:</label>
+        <input type="text" id="minSize" value="30">
+        <br>
+        
+        <label for="maxSize">Max Rectangle Size:</label>
+        <input type="text" id="maxSize" value="100">
+        <br>
+
+        <label for="minMaxSize">Min Max Rectangle Size:</label>
+        <input type="text" id="minMaxSize" value="50">
+        <br>
+        
+        <label for="numCandidates">Number of Candidates per Round:</label>
+        <input type="text" id="numCandidates" value="5">
+        <br>
+        
+        <label for="iterations">Number of Iterations:</label>
+        <input type="text" id="iterations" value="3">
+        <br>
+        
+        <label for="transparency">Enable Transparency:</label>
+        <input type="checkbox" id="transparency">
+        <br>
+        
+        <label for="decayRate">Decay Rate of Max Rectangle Size:</label>
+        <input type="text" id="decayRate" value="0.05">
+    </div>
+    
+    <div class="controls">
+        <button id="startBtn">Start</button>
+        <button id="stopBtn" disabled>Stop</button>
+        <button id="restartBtn" disabled>Restart</button>
+    </div>
+    
+    <canvas id="targetCanvas"></canvas>
+    <canvas id="approxCanvas"></canvas>
+    
+    <script>
+        const targetCanvas = document.getElementById('targetCanvas');
+        const targetContext = targetCanvas.getContext('2d');
+        const approxCanvas = document.getElementById('approxCanvas');
+        const approxContext = approxCanvas.getContext('2d');
+        
+        let targetImage = null;
+        let minSize = 30;
+        let maxSize = 100;
+        let minMaxSize = 50; // Minimum value for maxSize
+        let isTransparent = false;
+        let candidateCount = 5;
+        let iterations = 3;
+        let decayRate = 0.05;
+        let currentMaxSize = maxSize;
+        let animationFrameId = null;  // To store the animation frame request ID
+        
+        let isRunning = false;  // Flag to track if drawing is running
+        
+        document.getElementById('imageUpload').addEventListener('change', handleImageUpload);
+        document.getElementById('minSize').addEventListener('input', updateMinSize);
+        document.getElementById('maxSize').addEventListener('input', updateMaxSize);
+        document.getElementById('minMaxSize').addEventListener('input', updateMinMaxSize);
+        document.getElementById('numCandidates').addEventListener('input', updateNumCandidates);
+        document.getElementById('iterations').addEventListener('input', updateIterations);
+        document.getElementById('transparency').addEventListener('change', toggleTransparency);
+        document.getElementById('decayRate').addEventListener('input', updateDecayRate);
+        document.getElementById('startBtn').addEventListener('click', startDrawing);
+        document.getElementById('stopBtn').addEventListener('click', stopDrawing);
+        document.getElementById('restartBtn').addEventListener('click', restartDrawing);
+
+        function handleImageUpload(event) {
+            const file = event.target.files[0];
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    targetCanvas.width = img.width;
+                    targetCanvas.height = img.height;
+                    targetContext.drawImage(img, 0, 0);
+                    targetImage = targetContext.getImageData(0, 0, img.width, img.height);
+                    approxCanvas.width = img.width;
+                    approxCanvas.height = img.height;
+                    resetDrawing();
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function updateMinSize() {
+            minSize = parseInt(document.getElementById('minSize').value);
+        }
+
+        function updateMaxSize() {
+            maxSize = parseInt(document.getElementById('maxSize').value);
+            currentMaxSize = maxSize;  // Reset max size whenever user adjusts it
+        }
+
+        function updateMinMaxSize() {
+            minMaxSize = parseInt(document.getElementById('minMaxSize').value);
+        }
+
+        function updateNumCandidates() {
+            candidateCount = parseInt(document.getElementById('numCandidates').value);
+        }
+
+        function updateIterations() {
+            iterations = parseInt(document.getElementById('iterations').value);
+        }
+
+        function toggleTransparency() {
+            isTransparent = document.getElementById('transparency').checked;
+        }
+
+        function updateDecayRate() {
+            decayRate = parseFloat(document.getElementById('decayRate').value);
+        }
+
+        function startDrawing() {
+            if (targetImage && !isRunning) {
+                isRunning = true;
+                document.getElementById('startBtn').disabled = true;
+                document.getElementById('stopBtn').disabled = false;
+                document.getElementById('restartBtn').disabled = false;
+                requestAnimationFrame(drawLoop);
+            }
+        }
+
+        function stopDrawing() {
+            if (isRunning) {
+                isRunning = false;
+                document.getElementById('startBtn').disabled = false;
+                document.getElementById('stopBtn').disabled = true;
+                document.getElementById('restartBtn').disabled = false;
+                cancelAnimationFrame(animationFrameId);  // Stop the drawing loop
+            }
+        }
+
+        function restartDrawing() {
+            resetDrawing();
+            startDrawing();
+        }
+
+        function resetDrawing() {
+            approxContext.clearRect(0, 0, approxCanvas.width, approxCanvas.height);
+            currentMaxSize = maxSize;  // Reset the maximum rectangle size
+            // Reset any other state if needed (e.g., previous rectangles)
+        }
+
+        function drawLoop() {
+            if (!isRunning || !targetImage) return;
+
+            drawBestFitRectangles();
+            animationFrameId = requestAnimationFrame(drawLoop);  // Continuously call the drawing loop
+        }
+
+        function drawBestFitRectangles() {
+            if (!targetImage) return;
+
+            let bestRectangle = null;
+            let bestFitness = Infinity;
+
+            // Evaluate multiple candidates for the best rectangle
+            for (let i = 0; i < candidateCount; i++) {
+                const x = Math.floor(Math.random() * targetCanvas.width);
+                const y = Math.floor(Math.random() * targetCanvas.height);
+                const width = Math.floor(Math.random() * (currentMaxSize - minSize)) + minSize;
+                const height = Math.floor(Math.random() * (currentMaxSize - minSize)) + minSize;
+
+                const rectImageData = targetContext.getImageData(x, y, width, height);
+                const avgColor = getAverageColor(rectImageData);
+
+                const fitness = getFitness(x, y, width, height, avgColor);
+
+                if (fitness < bestFitness) {
+                    bestFitness = fitness;
+                    bestRectangle = { x, y, width, height, avgColor };
+                }
+            }
+
+            // Draw the best rectangle found
+            if (bestRectangle) {
+                drawRectangle(bestRectangle);
+            }
+
+            // Create perturbed versions of the best rectangle
+            for (let i = 0; i < iterations; i++) {
+                const perturbedRect = createPerturbedRectangle(bestRectangle);
+                const fitness = getFitness(perturbedRect.x, perturbedRect.y, perturbedRect.width, perturbedRect.height, perturbedRect.avgColor);
+                if (fitness < bestFitness) {
+                    bestFitness = fitness;
+                    bestRectangle = perturbedRect;
+                }
+            }
+
+            // Draw the best perturbed rectangle
+            if (bestRectangle) {
+                drawRectangle(bestRectangle);
+            }
+
+            // Decrease max rectangle size after each iteration
+            if (currentMaxSize > minMaxSize) {
+                currentMaxSize *= (1 - decayRate);
+            }
+        }
+
+        function createPerturbedRectangle(rect) {
+            const perturb = (value, delta = 5) => Math.max(0, value + Math.floor(Math.random() * delta * 2) - delta);
+            return {
+                x: perturb(rect.x),
+                y: perturb(rect.y),
+                width: perturb(rect.width),
+                height: perturb(rect.height),
+                avgColor: rect.avgColor,
+            };
+        }
+
+        function drawRectangle(rect) {
+            const { x, y, width, height, avgColor } = rect;
+            approxContext.fillStyle = `rgba(${avgColor.r}, ${avgColor.g}, ${avgColor.b}, ${isTransparent ? Math.random() : 1})`;
+            approxContext.fillRect(x, y, width, height);
+        }
+
+        function getFitness(x, y, width, height, avgColor) {
+            let diff = 0;
+            for (let i = 0; i < width; i++) {
+                for (let j = 0; j < height; j++) {
+                    const targetPixel = targetContext.getImageData(x + i, y + j, 1, 1).data;
+                    diff += Math.abs(targetPixel[0] - avgColor.r);
+                    diff += Math.abs(targetPixel[1] - avgColor.g);
+                    diff += Math.abs(targetPixel[2] - avgColor.b);
+                }
+            }
+            return diff;
+        }
+
+        function getAverageColor(imageData) {
+            let r = 0, g = 0, b = 0;
+            const data = imageData.data;
+            for (let i = 0; i < data.length; i += 4) {
+                r += data[i];
+                g += data[i + 1];
+                b += data[i + 2];
+            }
+            const pixelCount = data.length / 4;
+            return { r: r / pixelCount, g: g / pixelCount, b: b / pixelCount };
+        }
+    </script>
+</body>
+</html>
